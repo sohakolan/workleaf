@@ -43,7 +43,7 @@ Three independent environments, without three full copies of the project.
 
 ```sh
 make           # builds bin/wl
-make install   # builds and installs to /usr/local/bin (override with PREFIX=...)
+sudo make install   # builds and installs to /usr/local/bin (override with PREFIX=...)
 ```
 
 ## CLI
