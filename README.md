@@ -42,7 +42,8 @@ Three independent environments, without three full copies of the project.
 ## Install
 
 ```sh
-go build -o /usr/local/bin/wl ./cmd/wl
+make                          # builds bin/wl
+cp bin/wl /usr/local/bin/wl   # optional: put wl on your PATH
 ```
 
 ## CLI
