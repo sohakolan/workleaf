@@ -42,8 +42,8 @@ Three independent environments, without three full copies of the project.
 ## Install
 
 ```sh
-make                          # builds bin/wl
-cp bin/wl /usr/local/bin/wl   # optional: put wl on your PATH
+make           # builds bin/wl
+make install   # builds and installs to /usr/local/bin (override with PREFIX=...)
 ```
 
 ## CLI
