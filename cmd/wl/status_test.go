@@ -101,3 +101,25 @@ func TestStatusRunShowsOutput(t *testing.T) {
 		t.Fatalf("info:\n%s(err %v)", out.String(), err)
 	}
 }
+
+func TestStatusSkipsVanishedFiles(t *testing.T) {
+	root := project(t, "")
+	if err := create(root, "w"); err != nil {
+		t.Fatal(err)
+	}
+	ws := filepath.Join(root, spaceDir, "w")
+	files, err := walkFiles(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A dev server deletes a cache file between the walk and the disk usage call.
+	if err := os.Remove(filepath.Join(ws, "a.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := diskUsage(ws, files); err != nil {
+		t.Fatalf("diskUsage with a vanished file: %v", err)
+	}
+	if found, err := readDir(filepath.Join(ws, "gone"), "", func(string) {}); err != nil || len(found) != 0 {
+		t.Fatalf("readDir of a vanished directory = %v, %v", found, err)
+	}
+}
