@@ -54,7 +54,10 @@ wl init            # make the current directory a workleaf project (creates work
 wl create <name>   # create a workspace in <project>/workleaf-space/<name>
 wl rm <name>       # run remove hooks, then delete the workspace
 wl ls              # list workspaces
+wl status          # files modified/added/deleted vs the source, and real disk usage
 ```
+
+`wl status` reports the disk space a workspace really uses: the bytes APFS does not share with any clone. Finder and `du` show the full logical size instead, which is misleading for clones.
 
 Like git with `.git`, `wl` finds the project by walking up from the current directory to the nearest `workleaf.conf`, so it works from any subfolder. Inside a workspace, the cloned `workleaf.conf` is ignored: commands always target the main project.
 
