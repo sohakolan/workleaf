@@ -25,11 +25,11 @@ Guidance for AI agents working on Workleaf. Read `README.md` first for the proje
 
 ## Config (`workleaf.conf`)
 
-- INI-like format: `[create]` and `[remove]` sections, one `run = <command>` per line, executed in order.
-- Each command runs with `sh -c`, with the workspace as working directory.
+- INI-like format: `[create]` and `[remove]` sections, one `run = <command>` per line, executed in order. An empty `run =` followed by indented lines is one multi-line script (ends at the first non-indented line; common indentation removed).
+- Each command runs with `sh -ec`, with the workspace as working directory.
 - Environment: inherited, plus `WL_NAME`, `WL_PATH` (absolute workspace path) and `WL_SOURCE` (absolute project path).
 - Stop at the first failing hook.
-- `[status]` section: `ignore = <pattern> [<pattern>...]` (space-separated; no "/" → matches any name; with "/" → matches from the root; a matched folder hides its content) and `ignore-gitignored = true|false` (delegated to `git check-ignore`, never reimplemented). It only filters what `wl status` / `wl info` list; disk usage always counts everything.
+- `[status]` section: `run =` (one line or a block) whose output `wl status` / `wl info` print for the current workspace; `ignore = <pattern> [<pattern>...]` (space-separated; no "/" → matches any name; with "/" → matches from the root; a matched folder hides its content) and `ignore-gitignored = true|false` (delegated to `git check-ignore`, never reimplemented). It only filters what `wl status` / `wl info` list; disk usage always counts everything.
 
 ## Working conventions
 
