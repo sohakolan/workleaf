@@ -180,3 +180,36 @@ func TestInitAndFindRoot(t *testing.T) {
 		t.Fatal("create from inside a workspace did not target the main project")
 	}
 }
+
+func TestStatus(t *testing.T) {
+	root := project(t, "")
+	if err := create(root, "w"); err != nil {
+		t.Fatal(err)
+	}
+	ws := filepath.Join(root, spaceDir, "w")
+	src, err := walkFiles(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st, err := workspaceStatus(src, ws); err != nil || st != (wsStatus{}) {
+		t.Fatalf("fresh workspace status = %+v, %v (want all zero: clones share every block)", st, err)
+	}
+
+	write(t, filepath.Join(ws, "a.txt"), "changed content")
+	write(t, filepath.Join(ws, "new.bin"), strings.Repeat("x", 100<<10))
+	if err := os.Remove(filepath.Join(ws, "src", "b.txt")); err != nil {
+		t.Fatal(err)
+	}
+	st, err := workspaceStatus(src, ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.modified != 1 || st.added != 1 || st.deleted != 1 || st.disk < 100<<10 {
+		t.Fatalf("status = %+v", st)
+	}
+
+	var out strings.Builder
+	if err := status(root, &out); err != nil || !strings.Contains(out.String(), "w     1         1      1") {
+		t.Fatalf("status output:\n%s(err %v)", out.String(), err)
+	}
+}

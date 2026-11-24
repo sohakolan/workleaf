@@ -3,13 +3,17 @@ package main
 
 import (
 	"bufio"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"text/tabwriter"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -26,7 +30,8 @@ const usage = `usage:
   wl init            make the current directory a workleaf project (creates workleaf.conf)
   wl create <name>   create a workspace in <project>/workleaf-space/<name>
   wl rm <name>       run remove hooks, then delete the workspace
-  wl ls              list workspaces`
+  wl ls              list workspaces
+  wl status          show files changed vs the source and real disk usage of each workspace`
 
 const confTemplate = `# Workleaf hooks. Commands run with sh in the workspace directory,
 # with WL_NAME, WL_PATH and WL_SOURCE set.
@@ -68,6 +73,8 @@ func run(cwd string, args []string) error {
 			fmt.Println(n)
 		}
 		return err
+	case len(args) == 1 && args[0] == "status":
+		return status(root, os.Stdout)
 	}
 	return errors.New(usage)
 }
@@ -315,4 +322,117 @@ func runHooks(cmds []string, root, ws, name string) error {
 		}
 	}
 	return nil
+}
+
+type wsStatus struct {
+	modified, added, deleted int
+	disk                     int64 // bytes not shared with the source or any other clone
+}
+
+func status(root string, w io.Writer) error {
+	names, err := list(root)
+	if err != nil {
+		return err
+	}
+	src, err := walkFiles(root)
+	if err != nil {
+		return err
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tMODIFIED\tADDED\tDELETED\tDISK")
+	for _, name := range names {
+		st, err := workspaceStatus(src, filepath.Join(root, spaceDir, name))
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%s\n", name, st.modified, st.added, st.deleted, humanSize(st.disk))
+	}
+	return tw.Flush()
+}
+
+// workspaceStatus compares a workspace with the source files (by size and mtime, which clones keep).
+func workspaceStatus(src map[string]fs.FileInfo, ws string) (wsStatus, error) {
+	var st wsStatus
+	files, err := walkFiles(ws)
+	if err != nil {
+		return st, err
+	}
+	matched := 0
+	for rel, fi := range files {
+		s, ok := src[rel]
+		switch {
+		case !ok:
+			st.added++
+		case s.Size() != fi.Size() || !s.ModTime().Equal(fi.ModTime()):
+			st.modified++
+			matched++
+		default:
+			matched++
+		}
+		if fi.Mode().IsRegular() {
+			n, err := privateSize(filepath.Join(ws, rel))
+			if err != nil {
+				return st, err
+			}
+			st.disk += n
+		}
+	}
+	st.deleted = len(src) - matched
+	return st, nil
+}
+
+// walkFiles maps every non-directory entry under dir (relative path → info), skipping workleaf-space.
+func walkFiles(dir string) (map[string]fs.FileInfo, error) {
+	files := map[string]fs.FileInfo{}
+	space := filepath.Join(dir, spaceDir)
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if path == space {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		fi, err := d.Info()
+		if err != nil {
+			return err
+		}
+		files[rel(dir, path)] = fi
+		return nil
+	})
+	return files, err
+}
+
+// privateSize returns the bytes of a file that APFS does not share with any clone
+// (getattrlist ATTR_CMNEXT_PRIVATESIZE, which x/sys/unix does not wrap).
+func privateSize(path string) (int64, error) {
+	const attrCmnextPrivateSize = 0x8
+	al := unix.Attrlist{Bitmapcount: unix.ATTR_BIT_MAP_COUNT, Forkattr: attrCmnextPrivateSize}
+	var buf [12]byte // u_int32_t length, then off_t private size
+	p, err := unix.BytePtrFromString(path)
+	if err != nil {
+		return 0, err
+	}
+	_, _, errno := unix.Syscall6(unix.SYS_GETATTRLIST,
+		uintptr(unsafe.Pointer(p)), uintptr(unsafe.Pointer(&al)),
+		uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)),
+		unix.FSOPT_NOFOLLOW|unix.FSOPT_ATTR_CMN_EXTENDED, 0)
+	if errno != 0 {
+		return 0, fmt.Errorf("getattrlist %s: %w", path, errno)
+	}
+	return int64(binary.LittleEndian.Uint64(buf[4:])), nil
+}
+
+func humanSize(n int64) string {
+	if n < 1024 {
+		return fmt.Sprintf("%d B", n)
+	}
+	f, unit := float64(n), -1
+	for f >= 1024 && unit < 3 {
+		f /= 1024
+		unit++
+	}
+	return fmt.Sprintf("%.1f %cB", f, "KMGT"[unit])
 }
