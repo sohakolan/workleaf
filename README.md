@@ -55,7 +55,9 @@ wl init            # make the current directory a workleaf project (creates work
 wl create <name>   # create a workspace in <project>/workleaf-space/<name>
 wl rm <name>       # run remove hooks, then delete the workspace
 wl ls              # list workspaces
-wl status          # files modified/added/deleted vs the source, and real disk usage
+wl status          # current workspace: files changed, real disk usage, git branch
+                   # (outside a workspace: a summary of every workspace)
+wl info            # current workspace in detail, with the list of changed files
 ```
 
 `wl status` reports the disk space a workspace really uses: the bytes APFS does not share with any clone. Finder and `du` show the full logical size instead, which is misleading for clones.
@@ -87,6 +89,24 @@ run = docker compose down
 - Hooks run in the workspace directory, in order.
 - They receive `WL_NAME`, `WL_PATH` and `WL_SOURCE` as environment variables.
 - If a `create` hook fails, the workspace is deleted and the command fails.
+
+The `[status]` section hides paths from the changes listed by `wl status` and `wl info`. Disk usage still counts everything.
+
+```ini
+[status]
+# any file or folder named .git or .next, and its content
+ignore = .git .next
+# any file or folder name matching *.log
+ignore = *.log
+# a pattern with "/" matches from the project root
+ignore = app/generated/*
+# also hide what git ignores (tracked files are always shown)
+ignore-gitignored = true
+```
+
+Several patterns can share a line, separated by spaces (so a pattern can't contain a space). Comments go on their own line (`#` or `;`).
+
+`wl init` writes `ignore = .git`, since git rewrites its own files on every branch switch or commit. The `.git` folder itself stays in the workspace: branches work as usual.
 
 ## Status
 
