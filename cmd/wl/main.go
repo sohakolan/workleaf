@@ -14,7 +14,9 @@ const usage = `usage:
   wl ls              list workspaces (alias: list)
   wl status          current workspace: changed files, real disk usage, git branch
                      (outside a workspace: a summary of every workspace)
-  wl info            current workspace in detail, with the list of changed files`
+  wl info            current workspace in detail, with the list of changed files
+  wl completion <zsh|bash|fish>  print a tab completion script (make install sets it up)
+  wl completion <install|uninstall>  add/remove the completion block in ~/.zshrc and ~/.bashrc`
 
 func main() {
 	cwd, err := os.Getwd()
@@ -30,6 +32,9 @@ func main() {
 func run(cwd string, args []string) error {
 	if len(args) == 1 && args[0] == "init" {
 		return initProject(cwd)
+	}
+	if len(args) == 2 && args[0] == "completion" {
+		return completion(args[1])
 	}
 	root, err := findRoot(cwd)
 	if err != nil {
