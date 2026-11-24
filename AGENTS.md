@@ -13,6 +13,7 @@ Guidance for AI agents working on Workleaf. Read `README.md` first for the proje
 - **Platform**: macOS (APFS) only for now. Linux comes later; don't add abstractions for it yet.
 - **CoW mechanism**: APFS `clonefile(2)`. No FUSE, macFUSE, FUSE-T, FSKit or daemon. Workspaces are made of real files.
 - **Location**: workspaces live inside the project, in `./workleaf-space/<name>`. Names may contain `/`.
+- **Project root**: `wl init` creates `workleaf.conf`, which marks the root. Other commands walk up to the nearest `workleaf.conf`, like git with `.git`, skipping the cloned copies inside workspaces.
 
 ## Invariants (must always hold)
 
