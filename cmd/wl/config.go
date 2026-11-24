@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -38,8 +39,8 @@ type config struct {
 	ignoreGitignored bool
 }
 
-// loadConfig reads workleaf.conf: [create] / [remove] sections with `run = <command>` lines,
-// and a [status] section with `ignore = <patterns...>` and `ignore-gitignored = true|false` lines.
+// loadConfig reads workleaf.conf: [create] / [remove] sections with `run = <command>` lines
+// (or `run =` followed by an indented multi-line script), and a [status] section with `ignore = <patterns...>` and `ignore-gitignored = true|false` lines.
 func loadConfig(root string) (config, error) {
 	cfg := config{hooks: map[string][]string{}}
 	f, err := os.Open(filepath.Join(root, configFile))
@@ -52,9 +53,47 @@ func loadConfig(root string) (config, error) {
 	defer f.Close()
 
 	section := ""
+	// A `run =` with no value starts a script made of the indented lines that follow.
+	var script []string // nil when not inside a script
+	scriptSection, scriptLine, indent, blanks := "", 0, "", 0
+	endScript := func() error {
+		if script == nil {
+			return nil
+		}
+		if len(script) == 0 {
+			return fmt.Errorf("%s:%d: expected an indented script after `run =`", configFile, scriptLine)
+		}
+		cfg.hooks[scriptSection] = append(cfg.hooks[scriptSection], strings.Join(script, "\n"))
+		script = nil
+		return nil
+	}
+
 	sc := bufio.NewScanner(f)
 	for n := 1; sc.Scan(); n++ {
-		line := strings.TrimSpace(sc.Text())
+		raw := sc.Text()
+		if script != nil {
+			body := strings.TrimLeft(raw, " \t")
+			if body == "" {
+				blanks++ // kept only if more script lines follow
+				continue
+			}
+			if body != raw {
+				if len(script) == 0 {
+					indent = raw[:len(raw)-len(body)]
+				}
+				for ; blanks > 0; blanks-- {
+					script = append(script, "")
+				}
+				script = append(script, strings.TrimPrefix(raw, indent))
+				continue
+			}
+			if err := endScript(); err != nil {
+				return cfg, err
+			}
+		}
+		blanks = 0
+
+		line := strings.TrimSpace(raw)
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
 			continue
 		}
@@ -70,11 +109,14 @@ func loadConfig(root string) (config, error) {
 		switch {
 		case section == "":
 			return cfg, bad("[create], [remove] or [status] before this line")
-		case section != "status":
-			if key != "run" || val == "" {
-				return cfg, bad("`run = <command>`")
+		case key == "run": // in [status], its output is shown by wl status and wl info
+			if val == "" {
+				script, scriptSection, scriptLine = []string{}, section, n
+				continue
 			}
 			cfg.hooks[section] = append(cfg.hooks[section], val)
+		case section != "status":
+			return cfg, bad("`run = <command>`")
 		case key == "ignore":
 			patterns := strings.Fields(val) // several patterns per line, separated by spaces
 			if len(patterns) == 0 {
@@ -90,10 +132,13 @@ func loadConfig(root string) (config, error) {
 		case key == "ignore-gitignored" && (val == "true" || val == "false"):
 			cfg.ignoreGitignored = val == "true"
 		default:
-			return cfg, bad("`ignore = <pattern>` or `ignore-gitignored = true|false`")
+			return cfg, bad("`run = <command>`, `ignore = <pattern>` or `ignore-gitignored = true|false`")
 		}
 	}
-	return cfg, sc.Err()
+	if err := sc.Err(); err != nil {
+		return cfg, err
+	}
+	return cfg, endScript()
 }
 
 // ignored reports whether rel (slash-separated) matches an ignore pattern. A pattern without "/"
@@ -138,14 +183,19 @@ func gitIgnored(ws string, rels []string) (map[string]bool, error) {
 	return out, nil
 }
 
-func runHooks(cmds []string, root, ws, name string) error {
+// runHooks runs each hook with `sh -e`, so a script stops at its first failing command.
+func runHooks(cmds []string, root, ws, name string, out io.Writer) error {
 	for _, c := range cmds {
-		cmd := exec.Command("sh", "-c", c)
+		cmd := exec.Command("sh", "-ec", c)
 		cmd.Dir = ws
-		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, out, os.Stderr
 		cmd.Env = append(os.Environ(), "WL_NAME="+name, "WL_PATH="+ws, "WL_SOURCE="+root)
 		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("hook %q failed: %w", c, err)
+			first, _, multi := strings.Cut(c, "\n")
+			if multi {
+				first += " ..."
+			}
+			return fmt.Errorf("hook %q failed: %w", first, err)
 		}
 	}
 	return nil

@@ -114,7 +114,7 @@ func create(root, name string) (err error) {
 		}
 	}
 
-	return runHooks(cfg.hooks["create"], root, ws, name)
+	return runHooks(cfg.hooks["create"], root, ws, name, os.Stdout)
 }
 
 func remove(root, name string) error {
@@ -130,7 +130,7 @@ func remove(root, name string) error {
 	if err != nil {
 		return err
 	}
-	if err := runHooks(cfg.hooks["remove"], root, ws, name); err != nil {
+	if err := runHooks(cfg.hooks["remove"], root, ws, name, os.Stdout); err != nil {
 		return fmt.Errorf("%w (workspace kept)", err)
 	}
 	if err := os.RemoveAll(ws); err != nil {

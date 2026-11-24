@@ -85,3 +85,19 @@ func TestGitBranch(t *testing.T) {
 		t.Fatalf("gitBranch without git = %q", got)
 	}
 }
+
+func TestStatusRunShowsOutput(t *testing.T) {
+	root := project(t, "[status]\nrun =\n  echo \"API  https://api-$WL_NAME.test\"\n")
+	if err := create(root, "w"); err != nil {
+		t.Fatal(err)
+	}
+	ws := filepath.Join(root, spaceDir, "w")
+	var out strings.Builder
+	if err := status(root, ws, &out); err != nil || !strings.HasSuffix(out.String(), "on disk\nAPI  https://api-w.test\n") {
+		t.Fatalf("status:\n%s(err %v)", out.String(), err)
+	}
+	out.Reset()
+	if err := info(root, ws, &out); err != nil || !strings.Contains(out.String(), "\nAPI  https://api-w.test\n") {
+		t.Fatalf("info:\n%s(err %v)", out.String(), err)
+	}
+}

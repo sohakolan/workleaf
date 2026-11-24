@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
@@ -10,7 +11,7 @@ import (
 func TestLoadConfigRejectsBadLines(t *testing.T) {
 	for _, conf := range []string{
 		"run = x\n", "[create]\nfoo = x\n", "[create]\nrun =\n", "[other]\n", "[create]\nignore = x\n",
-		"[status]\nrun = x\n", "[status]\nignore =\n", "[status]\nignore = [\n", "[status]\nignore = .git [\n", "[status]\nignore-gitignored = yes\n",
+		"[status]\nignore =\n", "[status]\nignore = [\n", "[status]\nignore = .git [\n", "[status]\nignore-gitignored = yes\n",
 	} {
 		if _, err := loadConfig(project(t, conf)); err == nil {
 			t.Errorf("loadConfig(%q) succeeded", conf)
@@ -73,5 +74,57 @@ func TestIgnoreGitignored(t *testing.T) {
 	// cache.tmp is gitignored; tracked.tmp matches *.tmp but is tracked, so it stays.
 	if !reflect.DeepEqual(st.added, []string{"code.go"}) || !reflect.DeepEqual(st.modified, []string{"tracked.tmp"}) {
 		t.Fatalf("status = %+v", st)
+	}
+}
+
+func TestLoadConfigMultiLineScripts(t *testing.T) {
+	conf := "[create]\n" +
+		"run = echo one\n" +
+		"run =\n" +
+		"    x=1\n" +
+		"    if [ \"$x\" = 1 ]; then\n" +
+		"      echo nested\n" +
+		"\n" +
+		"    # shell comment, kept\n" +
+		"    fi\n" +
+		"\n" +
+		"run = echo two\n" +
+		"[remove]\n" +
+		"run =\n" +
+		"\techo last\n"
+	cfg, err := loadConfig(project(t, conf))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]string{
+		"create": {"echo one", "x=1\nif [ \"$x\" = 1 ]; then\n  echo nested\n\n# shell comment, kept\nfi", "echo two"},
+		"remove": {"echo last"},
+	}
+	if !reflect.DeepEqual(cfg.hooks, want) {
+		t.Fatalf("hooks = %q", cfg.hooks)
+	}
+
+	for _, bad := range []string{"[create]\nrun =\n", "[create]\nrun =\n\n[remove]\n", "[create]\nrun =\nrun = x\n"} {
+		if _, err := loadConfig(project(t, bad)); err == nil {
+			t.Errorf("loadConfig(%q) succeeded", bad)
+		}
+	}
+}
+
+func TestMultiLineHookSharesVariablesAndStopsOnError(t *testing.T) {
+	root := project(t, "[create]\nrun =\n  name=\"$WL_NAME\"\n  echo \"$name\" > hook.txt\n")
+	if err := create(root, "w"); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, filepath.Join(root, spaceDir, "w", "hook.txt")); got != "w\n" {
+		t.Fatalf("hook.txt = %q", got)
+	}
+
+	root = project(t, "[create]\nrun =\n  false\n  touch \"$WL_SOURCE/should-not-exist\"\n")
+	if err := create(root, "w"); err == nil {
+		t.Fatal("expected the failing script to fail create")
+	}
+	if _, err := os.Stat(filepath.Join(root, "should-not-exist")); err == nil {
+		t.Fatal("script kept going after a failing command")
 	}
 }

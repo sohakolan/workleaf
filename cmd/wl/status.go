@@ -37,12 +37,13 @@ func status(root, cwd string, w io.Writer) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprint(w, rel(filepath.Join(root, spaceDir), ws))
+	name := rel(filepath.Join(root, spaceDir), ws)
+	fmt.Fprint(w, name)
 	if b := gitBranch(ws); b != "" {
 		fmt.Fprintf(w, " on branch %s", b)
 	}
 	fmt.Fprintf(w, "\n%d files changed, %s on disk\n", st.changed(), humanSize(st.disk))
-	return nil
+	return runHooks(cfg.hooks["status"], root, ws, name, w)
 }
 
 func info(root, cwd string, w io.Writer) error {
@@ -74,6 +75,9 @@ func info(root, cwd string, w io.Writer) error {
 	fmt.Fprintf(tw, "Disk\t%s (%d bytes not shared with the source)\n", humanSize(st.disk), st.disk)
 	fmt.Fprintf(tw, "Changes\t%d modified, %d added, %d deleted\n", len(st.modified), len(st.added), len(st.deleted))
 	if err := tw.Flush(); err != nil {
+		return err
+	}
+	if err := runHooks(cfg.hooks["status"], root, ws, rel(filepath.Join(root, spaceDir), ws), w); err != nil {
 		return err
 	}
 	if st.changed() > 0 {
