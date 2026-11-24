@@ -10,7 +10,9 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"text/tabwriter"
 	"unsafe"
@@ -31,7 +33,9 @@ const usage = `usage:
   wl create <name>   create a workspace in <project>/workleaf-space/<name>
   wl rm <name>       run remove hooks, then delete the workspace
   wl ls              list workspaces
-  wl status          show files changed vs the source and real disk usage of each workspace`
+  wl status          current workspace: changed files, real disk usage, git branch
+                     (outside a workspace: a summary of every workspace)
+  wl info            current workspace in detail, with the list of changed files`
 
 const confTemplate = `# Workleaf hooks. Commands run with sh in the workspace directory,
 # with WL_NAME, WL_PATH and WL_SOURCE set.
@@ -41,6 +45,14 @@ const confTemplate = `# Workleaf hooks. Commands run with sh in the workspace di
 
 [remove]
 # run = docker compose down
+
+[status]
+# Hidden from the changes listed by wl status and wl info (disk usage still counts everything).
+# "name" or "*.log" matches any file or folder name; "dir/sub/*" matches from the project root.
+# Several patterns per line, separated by spaces.
+ignore = .git
+# ignore = .next *.log
+# ignore-gitignored = true
 `
 
 func main() {
@@ -74,7 +86,9 @@ func run(cwd string, args []string) error {
 		}
 		return err
 	case len(args) == 1 && args[0] == "status":
-		return status(root, os.Stdout)
+		return status(root, cwd, os.Stdout)
+	case len(args) == 1 && args[0] == "info":
+		return info(root, cwd, os.Stdout)
 	}
 	return errors.New(usage)
 }
@@ -120,7 +134,7 @@ func create(root, name string) (err error) {
 	if err := validName(name); err != nil {
 		return err
 	}
-	hooks, err := loadHooks(root)
+	cfg, err := loadConfig(root)
 	if err != nil {
 		return err
 	}
@@ -169,7 +183,7 @@ func create(root, name string) (err error) {
 		}
 	}
 
-	return runHooks(hooks["create"], root, ws, name)
+	return runHooks(cfg.hooks["create"], root, ws, name)
 }
 
 func remove(root, name string) error {
@@ -181,11 +195,11 @@ func remove(root, name string) error {
 	if !isWorkspace(ws) {
 		return fmt.Errorf("no workspace named %q", name)
 	}
-	hooks, err := loadHooks(root)
+	cfg, err := loadConfig(root)
 	if err != nil {
 		return err
 	}
-	if err := runHooks(hooks["remove"], root, ws, name); err != nil {
+	if err := runHooks(cfg.hooks["remove"], root, ws, name); err != nil {
 		return fmt.Errorf("%w (workspace kept)", err)
 	}
 	if err := os.RemoveAll(ws); err != nil {
@@ -280,15 +294,22 @@ func excludeFromGit(root string) error {
 	return err
 }
 
-// loadHooks reads workleaf.conf: [create] / [remove] sections with `run = <command>` lines.
-func loadHooks(root string) (map[string][]string, error) {
-	hooks := map[string][]string{}
+type config struct {
+	hooks            map[string][]string // "create" / "remove" → commands
+	ignore           []string            // patterns hidden from status change lists
+	ignoreGitignored bool
+}
+
+// loadConfig reads workleaf.conf: [create] / [remove] sections with `run = <command>` lines,
+// and a [status] section with `ignore = <patterns...>` and `ignore-gitignored = true|false` lines.
+func loadConfig(root string) (config, error) {
+	cfg := config{hooks: map[string][]string{}}
 	f, err := os.Open(filepath.Join(root, configFile))
 	if errors.Is(err, fs.ErrNotExist) {
-		return hooks, nil
+		return cfg, nil
 	}
 	if err != nil {
-		return nil, err
+		return cfg, err
 	}
 	defer f.Close()
 
@@ -296,19 +317,87 @@ func loadHooks(root string) (map[string][]string, error) {
 	sc := bufio.NewScanner(f)
 	for n := 1; sc.Scan(); n++ {
 		line := strings.TrimSpace(sc.Text())
-		switch {
-		case line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";"):
-		case line == "[create]" || line == "[remove]":
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if line == "[create]" || line == "[remove]" || line == "[status]" {
 			section = strings.Trim(line, "[]")
-		default:
-			key, cmd, ok := strings.Cut(line, "=")
-			if !ok || strings.TrimSpace(key) != "run" || section == "" || strings.TrimSpace(cmd) == "" {
-				return nil, fmt.Errorf("%s:%d: expected [create], [remove] or `run = <command>` in a section", configFile, n)
+			continue
+		}
+		key, val, _ := strings.Cut(line, "=")
+		key, val = strings.TrimSpace(key), strings.TrimSpace(val)
+		bad := func(want string) error {
+			return fmt.Errorf("%s:%d: expected %s", configFile, n, want)
+		}
+		switch {
+		case section == "":
+			return cfg, bad("[create], [remove] or [status] before this line")
+		case section != "status":
+			if key != "run" || val == "" {
+				return cfg, bad("`run = <command>`")
 			}
-			hooks[section] = append(hooks[section], strings.TrimSpace(cmd))
+			cfg.hooks[section] = append(cfg.hooks[section], val)
+		case key == "ignore":
+			patterns := strings.Fields(val) // several patterns per line, separated by spaces
+			if len(patterns) == 0 {
+				return cfg, bad("`ignore = <pattern> [<pattern>...]`")
+			}
+			for _, p := range patterns {
+				p = strings.Trim(p, "/")
+				if _, err := path.Match(p, ""); p == "" || err != nil {
+					return cfg, bad(fmt.Sprintf("a valid pattern, not %q", p))
+				}
+				cfg.ignore = append(cfg.ignore, p)
+			}
+		case key == "ignore-gitignored" && (val == "true" || val == "false"):
+			cfg.ignoreGitignored = val == "true"
+		default:
+			return cfg, bad("`ignore = <pattern>` or `ignore-gitignored = true|false`")
 		}
 	}
-	return hooks, sc.Err()
+	return cfg, sc.Err()
+}
+
+// ignored reports whether rel (slash-separated) matches an ignore pattern. A pattern without "/"
+// matches any file or folder name; with "/" it matches from the root. A matched folder hides its content.
+func ignored(patterns []string, rel string) bool {
+	segs := strings.Split(rel, "/")
+	for _, p := range patterns {
+		for i := range segs {
+			candidate := segs[i]
+			if strings.Contains(p, "/") {
+				candidate = strings.Join(segs[:i+1], "/")
+			}
+			if ok, _ := path.Match(p, candidate); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// gitIgnored returns the paths among rels that git ignores in ws (tracked files are never ignored).
+func gitIgnored(ws string, rels []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	if len(rels) == 0 {
+		return out, nil
+	}
+	if _, err := os.Stat(filepath.Join(ws, ".git")); err != nil {
+		return out, nil // not a git repository: nothing is gitignored
+	}
+	cmd := exec.Command("git", "-C", ws, "check-ignore", "--stdin", "-z")
+	cmd.Stdin = strings.NewReader(strings.Join(rels, "\x00") + "\x00")
+	res, err := cmd.Output()
+	var exit *exec.ExitError
+	if err != nil && !(errors.As(err, &exit) && exit.ExitCode() == 1) { // 1 = nothing ignored
+		return nil, fmt.Errorf("git check-ignore: %w", err)
+	}
+	for _, p := range strings.Split(string(res), "\x00") {
+		if p != "" {
+			out[p] = true
+		}
+	}
+	return out, nil
 }
 
 func runHooks(cmds []string, root, ws, name string) error {
@@ -325,12 +414,116 @@ func runHooks(cmds []string, root, ws, name string) error {
 }
 
 type wsStatus struct {
-	modified, added, deleted int
-	disk                     int64 // bytes not shared with the source or any other clone
+	modified, added, deleted []string // sorted paths relative to the workspace
+	disk                     int64    // bytes not shared with the source or any other clone
 }
 
-func status(root string, w io.Writer) error {
+func (st wsStatus) changed() int { return len(st.modified) + len(st.added) + len(st.deleted) }
+
+// currentWorkspace returns the workspace containing cwd, if any.
+func currentWorkspace(root, cwd string) (string, bool) {
+	space := filepath.Join(root, spaceDir)
+	for dir := cwd; strings.HasPrefix(dir, space+string(filepath.Separator)); dir = filepath.Dir(dir) {
+		if isWorkspace(dir) {
+			return dir, true
+		}
+	}
+	return "", false
+}
+
+// gitBranch returns the workspace's current branch, "(detached)", or "" without git.
+func gitBranch(ws string) string {
+	if _, err := os.Stat(filepath.Join(ws, ".git")); err != nil {
+		return "" // don't let git pick up a repository above the workspace
+	}
+	// symbolic-ref also works before the first commit; it exits 1 only on a detached HEAD.
+	out, err := exec.Command("git", "-C", ws, "symbolic-ref", "--short", "-q", "HEAD").Output()
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+		return strings.TrimSpace(string(out))
+	case errors.As(err, &exit) && exit.ExitCode() == 1:
+		return "(detached)"
+	}
+	return ""
+}
+
+func status(root, cwd string, w io.Writer) error {
+	ws, ok := currentWorkspace(root, cwd)
+	if !ok {
+		return statusAll(root, w)
+	}
+	cfg, err := loadConfig(root)
+	if err != nil {
+		return err
+	}
+	src, err := walkFiles(root)
+	if err != nil {
+		return err
+	}
+	st, err := workspaceStatus(src, ws, cfg)
+	if err != nil {
+		return err
+	}
+	fmt.Fprint(w, rel(filepath.Join(root, spaceDir), ws))
+	if b := gitBranch(ws); b != "" {
+		fmt.Fprintf(w, " on branch %s", b)
+	}
+	fmt.Fprintf(w, "\n%d files changed, %s on disk\n", st.changed(), humanSize(st.disk))
+	return nil
+}
+
+func info(root, cwd string, w io.Writer) error {
+	ws, ok := currentWorkspace(root, cwd)
+	if !ok {
+		return errors.New("not inside a workspace (run `wl status` for a summary of all workspaces)")
+	}
+	cfg, err := loadConfig(root)
+	if err != nil {
+		return err
+	}
+	src, err := walkFiles(root)
+	if err != nil {
+		return err
+	}
+	st, err := workspaceStatus(src, ws, cfg)
+	if err != nil {
+		return err
+	}
+	branch := gitBranch(ws)
+	if branch == "" {
+		branch = "-"
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(tw, "Workspace\t%s\n", rel(filepath.Join(root, spaceDir), ws))
+	fmt.Fprintf(tw, "Path\t%s\n", ws)
+	fmt.Fprintf(tw, "Source\t%s\n", root)
+	fmt.Fprintf(tw, "Branch\t%s\n", branch)
+	fmt.Fprintf(tw, "Disk\t%s (%d bytes not shared with the source)\n", humanSize(st.disk), st.disk)
+	fmt.Fprintf(tw, "Changes\t%d modified, %d added, %d deleted\n", len(st.modified), len(st.added), len(st.deleted))
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	if st.changed() > 0 {
+		fmt.Fprintln(w)
+	}
+	for _, g := range []struct {
+		mark  string
+		paths []string
+	}{{"M", st.modified}, {"A", st.added}, {"D", st.deleted}} {
+		for _, p := range g.paths {
+			fmt.Fprintf(w, "%s  %s\n", g.mark, p)
+		}
+	}
+	return nil
+}
+
+func statusAll(root string, w io.Writer) error {
 	names, err := list(root)
+	if err != nil {
+		return err
+	}
+	cfg, err := loadConfig(root)
 	if err != nil {
 		return err
 	}
@@ -341,33 +534,31 @@ func status(root string, w io.Writer) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "NAME\tMODIFIED\tADDED\tDELETED\tDISK")
 	for _, name := range names {
-		st, err := workspaceStatus(src, filepath.Join(root, spaceDir, name))
+		st, err := workspaceStatus(src, filepath.Join(root, spaceDir, name), cfg)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%s\n", name, st.modified, st.added, st.deleted, humanSize(st.disk))
+		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%s\n", name, len(st.modified), len(st.added), len(st.deleted), humanSize(st.disk))
 	}
 	return tw.Flush()
 }
 
 // workspaceStatus compares a workspace with the source files (by size and mtime, which clones keep).
-func workspaceStatus(src map[string]fs.FileInfo, ws string) (wsStatus, error) {
+// Paths hidden by the [status] config are left out of the change lists but still count in disk.
+func workspaceStatus(src map[string]fs.FileInfo, ws string, cfg config) (wsStatus, error) {
 	var st wsStatus
 	files, err := walkFiles(ws)
 	if err != nil {
 		return st, err
 	}
-	matched := 0
 	for rel, fi := range files {
 		s, ok := src[rel]
 		switch {
+		case ignored(cfg.ignore, rel):
 		case !ok:
-			st.added++
+			st.added = append(st.added, rel)
 		case s.Size() != fi.Size() || !s.ModTime().Equal(fi.ModTime()):
-			st.modified++
-			matched++
-		default:
-			matched++
+			st.modified = append(st.modified, rel)
 		}
 		if fi.Mode().IsRegular() {
 			n, err := privateSize(filepath.Join(ws, rel))
@@ -377,7 +568,24 @@ func workspaceStatus(src map[string]fs.FileInfo, ws string) (wsStatus, error) {
 			st.disk += n
 		}
 	}
-	st.deleted = len(src) - matched
+	for rel := range src {
+		if _, ok := files[rel]; !ok && !ignored(cfg.ignore, rel) {
+			st.deleted = append(st.deleted, rel)
+		}
+	}
+	if cfg.ignoreGitignored {
+		gi, err := gitIgnored(ws, slices.Concat(st.modified, st.added, st.deleted))
+		if err != nil {
+			return st, err
+		}
+		hidden := func(rel string) bool { return gi[rel] }
+		st.modified = slices.DeleteFunc(st.modified, hidden)
+		st.added = slices.DeleteFunc(st.added, hidden)
+		st.deleted = slices.DeleteFunc(st.deleted, hidden)
+	}
+	slices.Sort(st.modified)
+	slices.Sort(st.added)
+	slices.Sort(st.deleted)
 	return st, nil
 }
 
