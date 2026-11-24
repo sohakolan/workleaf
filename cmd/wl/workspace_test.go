@@ -172,3 +172,25 @@ func TestInitAndFindRoot(t *testing.T) {
 		t.Fatal("create from inside a workspace did not target the main project")
 	}
 }
+
+func TestAliases(t *testing.T) {
+	root := project(t, "")
+	if err := initProject(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(root, []string{"add", "w"}); err != nil {
+		t.Fatal(err)
+	}
+	if !isWorkspace(filepath.Join(root, spaceDir, "w")) {
+		t.Fatal("wl add did not create the workspace")
+	}
+	if err := run(root, []string{"list"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(root, []string{"remove", "w"}); err != nil {
+		t.Fatal(err)
+	}
+	if isWorkspace(filepath.Join(root, spaceDir, "w")) {
+		t.Fatal("wl remove did not delete the workspace")
+	}
+}

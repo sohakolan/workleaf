@@ -9,9 +9,9 @@ import (
 
 const usage = `usage:
   wl init            make the current directory a workleaf project (creates workleaf.conf)
-  wl create <name>   create a workspace in <project>/workleaf-space/<name>
-  wl rm <name>       run remove hooks, then delete the workspace
-  wl ls              list workspaces
+  wl create <name>   create a workspace in <project>/workleaf-space/<name> (alias: add)
+  wl rm <name>       run remove hooks, then delete the workspace (alias: remove)
+  wl ls              list workspaces (alias: list)
   wl status          current workspace: changed files, real disk usage, git branch
                      (outside a workspace: a summary of every workspace)
   wl info            current workspace in detail, with the list of changed files`
@@ -36,11 +36,11 @@ func run(cwd string, args []string) error {
 		return err
 	}
 	switch {
-	case len(args) == 2 && args[0] == "create":
+	case len(args) == 2 && (args[0] == "create" || args[0] == "add"):
 		return create(root, args[1])
-	case len(args) == 2 && args[0] == "rm":
+	case len(args) == 2 && (args[0] == "rm" || args[0] == "remove"):
 		return remove(root, args[1])
-	case len(args) == 1 && args[0] == "ls":
+	case len(args) == 1 && (args[0] == "ls" || args[0] == "list"):
 		names, err := list(root)
 		for _, n := range names {
 			fmt.Println(n)
