@@ -39,15 +39,24 @@ my-project/                 5 GB, 100,000 files
 
 Three independent environments, without three full copies of the project.
 
+## Install
+
+```sh
+go build -o /usr/local/bin/wl ./cmd/wl
+```
+
 ## CLI
 
 The command is `wl`.
 
 ```sh
-wl create <name>   # create a workspace in ./workleaf-space/<name>
+wl init            # make the current directory a workleaf project (creates workleaf.conf)
+wl create <name>   # create a workspace in <project>/workleaf-space/<name>
 wl rm <name>       # run remove hooks, then delete the workspace
 wl ls              # list workspaces
 ```
+
+Like git with `.git`, `wl` finds the project by walking up from the current directory to the nearest `workleaf.conf`, so it works from any subfolder. Inside a workspace, the cloned `workleaf.conf` is ignored: commands always target the main project.
 
 Names can contain `/` (for example `feature/test` becomes `./workleaf-space/feature/test`).
 
@@ -60,7 +69,7 @@ Each workspace gets its own CoW copy of `.git`, so it can switch branches indepe
 
 ## Configuration: `workleaf.conf`
 
-An optional `workleaf.conf` at the project root defines hooks that run when a workspace is created or removed:
+`workleaf.conf` (created by `wl init`) marks the project root and defines hooks that run when a workspace is created or removed:
 
 ```ini
 [create]
