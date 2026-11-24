@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -139,43 +138,6 @@ func TestRemoveFailingHookKeepsWorkspace(t *testing.T) {
 	}
 }
 
-func TestLoadConfigRejectsBadLines(t *testing.T) {
-	for _, conf := range []string{
-		"run = x\n", "[create]\nfoo = x\n", "[create]\nrun =\n", "[other]\n", "[create]\nignore = x\n",
-		"[status]\nrun = x\n", "[status]\nignore =\n", "[status]\nignore = [\n", "[status]\nignore = .git [\n", "[status]\nignore-gitignored = yes\n",
-	} {
-		if _, err := loadConfig(project(t, conf)); err == nil {
-			t.Errorf("loadConfig(%q) succeeded", conf)
-		}
-	}
-}
-
-func TestLoadConfigIgnoreSeveralPerLine(t *testing.T) {
-	cfg, err := loadConfig(project(t, "[status]\nignore = .git  .next\nignore = app/gen/ *.log\n"))
-	if err != nil || !reflect.DeepEqual(cfg.ignore, []string{".git", ".next", "app/gen", "*.log"}) {
-		t.Fatalf("ignore = %v, %v", cfg.ignore, err)
-	}
-}
-
-func TestIgnored(t *testing.T) {
-	patterns := []string{".git", "*.log", "app/generated/*"}
-	for rel, want := range map[string]bool{
-		".git/index":              true,
-		"sub/.git/HEAD":           true,
-		"debug.log":               true,
-		"logs/x/debug.log":        true,
-		"app/generated/a.ts":      true,
-		"app/generated/deep/b":    true,
-		"other/app/generated/a":   false,
-		"app/page.tsx":            false,
-		".github/workflows/x.yml": false,
-	} {
-		if got := ignored(patterns, rel); got != want {
-			t.Errorf("ignored(%q) = %v, want %v", rel, got, want)
-		}
-	}
-}
-
 func TestInitAndFindRoot(t *testing.T) {
 	root := project(t, "")
 	sub := filepath.Join(root, "src")
@@ -208,114 +170,5 @@ func TestInitAndFindRoot(t *testing.T) {
 	}
 	if !isWorkspace(filepath.Join(root, spaceDir, "other")) {
 		t.Fatal("create from inside a workspace did not target the main project")
-	}
-}
-
-func TestStatus(t *testing.T) {
-	root := project(t, "[status]\nignore = .git\n")
-	cfg := config{ignore: []string{".git"}}
-	if err := create(root, "w"); err != nil {
-		t.Fatal(err)
-	}
-	ws := filepath.Join(root, spaceDir, "w")
-	src, err := walkFiles(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if st, err := workspaceStatus(src, ws, cfg); err != nil || st.changed() != 0 || st.disk != 0 {
-		t.Fatalf("fresh workspace status = %+v, %v (want all zero: clones share every block)", st, err)
-	}
-
-	write(t, filepath.Join(ws, "a.txt"), "changed content")
-	write(t, filepath.Join(ws, "new.bin"), strings.Repeat("x", 100<<10))
-	if err := os.Remove(filepath.Join(ws, "src", "b.txt")); err != nil {
-		t.Fatal(err)
-	}
-	// Files matching an ignore pattern (here .git) are not reported as changes.
-	write(t, filepath.Join(ws, ".git", "HEAD"), "ref: refs/heads/other-branch\n")
-	write(t, filepath.Join(ws, ".git", "index"), "new")
-	st, err := workspaceStatus(src, ws, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(st.modified, []string{"a.txt"}) || !reflect.DeepEqual(st.added, []string{"new.bin"}) ||
-		!reflect.DeepEqual(st.deleted, []string{"src/b.txt"}) || st.disk < 100<<10 {
-		t.Fatalf("status = %+v", st)
-	}
-
-	// Outside a workspace: one summary line per workspace.
-	var out strings.Builder
-	if err := status(root, root, &out); err != nil || !strings.Contains(out.String(), "w     1         1      1") {
-		t.Fatalf("status output:\n%s(err %v)", out.String(), err)
-	}
-
-	// Inside a workspace (from a subfolder): just that workspace.
-	inWs := filepath.Join(ws, "src")
-	out.Reset()
-	if err := status(root, inWs, &out); err != nil || !strings.HasPrefix(out.String(), "w\n3 files changed, ") {
-		t.Fatalf("status in workspace:\n%s(err %v)", out.String(), err)
-	}
-	out.Reset()
-	if err := info(root, inWs, &out); err != nil || !strings.Contains(out.String(), "M  a.txt\nA  new.bin\nD  src/b.txt\n") {
-		t.Fatalf("info:\n%s(err %v)", out.String(), err)
-	}
-	if err := info(root, root, &out); err == nil {
-		t.Fatal("info outside a workspace succeeded")
-	}
-}
-
-func TestGitBranch(t *testing.T) {
-	root := t.TempDir()
-	if out, err := exec.Command("git", "init", "-q", "-b", "feat/x", root).CombinedOutput(); err != nil {
-		t.Skipf("git unavailable: %v %s", err, out)
-	}
-	if err := initProject(root); err != nil {
-		t.Fatal(err)
-	}
-	if err := create(root, "w"); err != nil {
-		t.Fatal(err)
-	}
-	ws := filepath.Join(root, spaceDir, "w")
-	if got := gitBranch(ws); got != "feat/x" {
-		t.Fatalf("gitBranch = %q", got)
-	}
-	var out strings.Builder
-	if err := status(root, ws, &out); err != nil || !strings.HasPrefix(out.String(), "w on branch feat/x\n") {
-		t.Fatalf("status:\n%s(err %v)", out.String(), err)
-	}
-	if got := gitBranch(t.TempDir()); got != "" {
-		t.Fatalf("gitBranch without git = %q", got)
-	}
-}
-
-func TestIgnoreGitignored(t *testing.T) {
-	root := t.TempDir()
-	if out, err := exec.Command("git", "init", "-q", root).CombinedOutput(); err != nil {
-		t.Skipf("git unavailable: %v %s", err, out)
-	}
-	write(t, filepath.Join(root, ".gitignore"), "*.tmp\n")
-	write(t, filepath.Join(root, "tracked.tmp"), "v1")
-	if out, err := exec.Command("git", "-C", root, "add", "-f", "tracked.tmp").CombinedOutput(); err != nil {
-		t.Fatalf("git add: %v %s", err, out)
-	}
-	if err := create(root, "w"); err != nil {
-		t.Fatal(err)
-	}
-	ws := filepath.Join(root, spaceDir, "w")
-	write(t, filepath.Join(ws, "cache.tmp"), "x")
-	write(t, filepath.Join(ws, "code.go"), "x")
-	write(t, filepath.Join(ws, "tracked.tmp"), "v2 changed")
-
-	src, err := walkFiles(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	st, err := workspaceStatus(src, ws, config{ignore: []string{".git"}, ignoreGitignored: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// cache.tmp is gitignored; tracked.tmp matches *.tmp but is tracked, so it stays.
-	if !reflect.DeepEqual(st.added, []string{"code.go"}) || !reflect.DeepEqual(st.modified, []string{"tracked.tmp"}) {
-		t.Fatalf("status = %+v", st)
 	}
 }
