@@ -52,12 +52,32 @@ The command is `wl`.
 
 ```sh
 wl init            # make the current directory a workleaf project (creates workleaf.conf)
-wl create <name>   # create a workspace in <project>/workleaf-space/<name>
-wl rm <name>       # run remove hooks, then delete the workspace
-wl ls              # list workspaces
+wl create <name>   # create a workspace in <project>/workleaf-space/<name> (alias: wl add)
+wl rm <name>       # run remove hooks, then delete the workspace (alias: wl remove)
+wl ls              # list workspaces (alias: wl list)
 wl status          # current workspace: files changed, real disk usage, git branch
                    # (outside a workspace: a summary of every workspace)
 wl info            # current workspace in detail, with the list of changed files
+wl completion zsh  # print a tab completion script (zsh, bash or fish)
+```
+
+### Tab completion
+
+`wl <Tab>` completes commands and `wl rm <Tab>` completes workspace names. Open a new terminal after `make install`, which sets it up two ways:
+
+- a completion file for each shell installed (zsh, bash, fish), in the directory that shell loads completions from;
+- a block at the end of `~/.zshrc` and `~/.bashrc` (only those that exist), which also works when zsh's completion cache is stale (`compinit -C`):
+
+```sh
+# Workleaf start here
+(( $+functions[compdef] )) && command -v wl >/dev/null && eval "$(wl completion zsh)"
+# Workleaf end here
+```
+
+The markers keep it to a single block however many times you run `make install`, and let `make uninstall` remove it. `wl completion install` / `wl completion uninstall` do just that part.
+
+```sh
+sudo make uninstall   # removes the binary, the completion files and the rc blocks
 ```
 
 `wl status` reports the disk space a workspace really uses: the bytes APFS does not share with any clone. Finder and `du` show the full logical size instead, which is misleading for clones.
@@ -86,9 +106,21 @@ run = npm install
 run = docker compose down
 ```
 
-- Hooks run in the workspace directory, in order.
+- Hooks run in the workspace directory, in order, with `sh -e`: a hook stops at its first failing command.
 - They receive `WL_NAME`, `WL_PATH` and `WL_SOURCE` as environment variables.
 - If a `create` hook fails, the workspace is deleted and the command fails.
+
+For longer scripts, leave `run =` empty and indent the script below it. The whole block runs as one script, so variables are shared between its lines:
+
+```ini
+[create]
+run =
+  slug=$(echo "$WL_NAME" | tr / -)
+  createdb "app-$slug"
+  echo "DATABASE_URL=postgresql://localhost/app-$slug" >> .env.local
+```
+
+The block ends at the first line that is not indented. Indentation is removed, blank lines and `#` comments inside the block are kept.
 
 The `[status]` section hides paths from the changes listed by `wl status` and `wl info`. Disk usage still counts everything.
 
@@ -105,6 +137,14 @@ ignore-gitignored = true
 ```
 
 Several patterns can share a line, separated by spaces (so a pattern can't contain a space). Comments go on their own line (`#` or `;`).
+
+`[status]` also accepts `run =` (one line or an indented block). Its output is shown by `wl status` and `wl info`, for example the URLs or database of the workspace:
+
+```ini
+[status]
+run =
+  echo "API       https://$(sed -n 's/^APP_HOST=//p' api/.env.local | tail -1)"
+```
 
 `wl init` writes `ignore = .git`, since git rewrites its own files on every branch switch or commit. The `.git` folder itself stays in the workspace: branches work as usual.
 
